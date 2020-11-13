@@ -1,6 +1,23 @@
 let transactions = [];
 let myChart;
 
+const DATABASE_NAME = "transaction_db";
+const DATABASE_VERSION = 1;
+
+let db;
+const dbOpenRequest = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
+dbOpenRequest.onerror = function(event) {
+  console.log("Database error: " + event.target.errorCode);
+};
+dbOpenRequest.onsuccess = function(event) {
+  db = event.target.result;
+};
+dbOpenRequest.onupgradeneeded = function(event) {
+  db = event.target.result;
+
+  const objectStore = db.createObjectStore("transactions", { keyPath: "date" });
+};
+
 fetch("/api/transaction")
   .then(response => {
     return response.json();
@@ -132,6 +149,22 @@ function sendTransaction(isAdding) {
       // clear form
       nameEl.value = "";
       amountEl.value = "";
+      
+      const transactionsObjectStore = db.transaction("transactions", "readwrite").objectStore("transactions");
+      const request = transactionsObjectStore.getAll();
+      request.onsuccess = () => {
+        Promise.all(request.result.map(transaction => fetch("/api/transaction", {
+          method: "POST",
+          body: JSON.stringify(transaction),
+          headers: {
+            Accept: "application/json, text/plain, */*",
+            "Content-Type": "application/json"
+          }
+        }))).then(() => {
+          const request = transactionsObjectStore.clear();
+          request.onsuccess = () => window.location.reload();
+        }).catch(() => {})
+      };
     }
   })
   .catch(err => {
@@ -142,6 +175,11 @@ function sendTransaction(isAdding) {
     nameEl.value = "";
     amountEl.value = "";
   });
+}
+
+function saveRecord(transaction) {
+  const transactionsObjectStore = db.transaction("transactions", "readwrite").objectStore("transactions");
+  transactionsObjectStore.add(transaction);
 }
 
 document.querySelector("#add-btn").onclick = function() {
