@@ -6,23 +6,70 @@ const DATABASE_VERSION = 1;
 
 let db;
 const dbOpenRequest = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
-dbOpenRequest.onerror = function(event) {
+dbOpenRequest.onerror = function (event) {
   console.log("Database error: " + event.target.errorCode);
 };
-dbOpenRequest.onsuccess = function(event) {
+dbOpenRequest.onsuccess = function (event) {
   db = event.target.result;
+  if (navigator.onLine) {
+    checkDatabase();
+  }
 };
-dbOpenRequest.onupgradeneeded = function(event) {
+dbOpenRequest.onupgradeneeded = function (event) {
   db = event.target.result;
 
   const objectStore = db.createObjectStore("transactions", { keyPath: "date" });
 };
 
+function saveRecord(record) {
+  // create a transaction on the pending db with readwrite access
+  const transaction = db.transaction(["pending"], "readwrite");
+
+  // access your pending object store
+  const store = transaction.objectStore("pending");
+
+  // add record to your store with add method.
+  store.add(record);
+}
+
+function checkDatabase() {
+  // open a transaction on your pending db
+  const transaction = db.transaction(["pending"], "readwrite");
+  // access your pending object store
+  const store = transaction.objectStore("pending");
+  // get all records from store and set to a variable
+  const getAll = store.getAll();
+
+  getAll.onsuccess = function () {
+    if (getAll.result.length > 0) {
+      fetch("/api/transaction/bulk", {
+        method: "POST",
+        body: JSON.stringify(getAll.result),
+        headers: {
+          Accept: "application/json, text/plain, */*",
+          "Content-Type": "application/json",
+        },
+      })
+        .then((response) => response.json())
+        .then(() => {
+          // if successful, open a transaction on your pending db
+          const transaction = db.transaction(["pending"], "readwrite");
+
+          // access your pending object store
+          const store = transaction.objectStore("pending");
+
+          // clear all items in your store
+          store.clear();
+        });
+    }
+  };
+}
+
 fetch("/api/transaction")
-  .then(response => {
+  .then((response) => {
     return response.json();
   })
-  .then(data => {
+  .then((data) => {
     // save db data on global variable
     transactions = data;
 
@@ -45,7 +92,7 @@ function populateTable() {
   let tbody = document.querySelector("#tbody");
   tbody.innerHTML = "";
 
-  transactions.forEach(transaction => {
+  transactions.forEach((transaction) => {
     // create and populate a table row
     let tr = document.createElement("tr");
     tr.innerHTML = `
@@ -63,13 +110,13 @@ function populateChart() {
   let sum = 0;
 
   // create date labels for chart
-  let labels = reversed.map(t => {
+  let labels = reversed.map((t) => {
     let date = new Date(t.date);
     return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
   });
 
   // create incremental values for chart
-  let data = reversed.map(t => {
+  let data = reversed.map((t) => {
     sum += parseInt(t.value);
     return sum;
   });
@@ -82,16 +129,18 @@ function populateChart() {
   let ctx = document.getElementById("myChart").getContext("2d");
 
   myChart = new Chart(ctx, {
-    type: 'line',
-      data: {
-        labels,
-        datasets: [{
-            label: "Total Over Time",
-            fill: true,
-            backgroundColor: "#6666ff",
-            data
-        }]
-    }
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "Total Over Time",
+          fill: true,
+          backgroundColor: "#6666ff",
+          data,
+        },
+      ],
+    },
   });
 }
 
@@ -104,8 +153,7 @@ function sendTransaction(isAdding) {
   if (nameEl.value === "" || amountEl.value === "") {
     errorEl.textContent = "Missing Information";
     return;
-  }
-  else {
+  } else {
     errorEl.textContent = "";
   }
 
@@ -113,7 +161,7 @@ function sendTransaction(isAdding) {
   let transaction = {
     name: nameEl.value,
     value: amountEl.value,
-    date: new Date().toISOString()
+    date: new Date().toISOString(),
   };
 
   // if subtracting funds, convert amount to negative number
@@ -128,64 +176,75 @@ function sendTransaction(isAdding) {
   populateChart();
   populateTable();
   populateTotal();
-  
+
   // also send to server
   fetch("/api/transaction", {
     method: "POST",
     body: JSON.stringify(transaction),
     headers: {
       Accept: "application/json, text/plain, */*",
-      "Content-Type": "application/json"
-    }
+      "Content-Type": "application/json",
+    },
   })
-  .then(response => {    
-    return response.json();
-  })
-  .then(data => {
-    if (data.errors) {
-      errorEl.textContent = "Missing Information";
-    }
-    else {
+    .then((response) => {
+      return response.json();
+    })
+    .then((data) => {
+      if (data.errors) {
+        errorEl.textContent = "Missing Information";
+      } else {
+        // clear form
+        nameEl.value = "";
+        amountEl.value = "";
+
+        const transactionsObjectStore = db
+          .transaction("transactions", "readwrite")
+          .objectStore("transactions");
+        const request = transactionsObjectStore.getAll();
+        request.onsuccess = () => {
+          Promise.all(
+            request.result.map((transaction) =>
+              fetch("/api/transaction", {
+                method: "POST",
+                body: JSON.stringify(transaction),
+                headers: {
+                  Accept: "application/json, text/plain, */*",
+                  "Content-Type": "application/json",
+                },
+              })
+            )
+          )
+            .then(() => {
+              const request = transactionsObjectStore.clear();
+              request.onsuccess = () => window.location.reload();
+            })
+            .catch(() => {});
+        };
+      }
+    })
+    .catch((err) => {
+      // fetch failed, so save in indexed db
+      saveRecord(transaction);
+
       // clear form
       nameEl.value = "";
       amountEl.value = "";
-      
-      const transactionsObjectStore = db.transaction("transactions", "readwrite").objectStore("transactions");
-      const request = transactionsObjectStore.getAll();
-      request.onsuccess = () => {
-        Promise.all(request.result.map(transaction => fetch("/api/transaction", {
-          method: "POST",
-          body: JSON.stringify(transaction),
-          headers: {
-            Accept: "application/json, text/plain, */*",
-            "Content-Type": "application/json"
-          }
-        }))).then(() => {
-          const request = transactionsObjectStore.clear();
-          request.onsuccess = () => window.location.reload();
-        }).catch(() => {})
-      };
-    }
-  })
-  .catch(err => {
-    // fetch failed, so save in indexed db
-    saveRecord(transaction);
-
-    // clear form
-    nameEl.value = "";
-    amountEl.value = "";
-  });
+    });
 }
 
 function saveRecord(transaction) {
-  const transactionsObjectStore = db.transaction("transactions", "readwrite").objectStore("transactions");
+  const transactionsObjectStore = db
+    .transaction("transactions", "readwrite")
+    .objectStore("transactions");
   transactionsObjectStore.add(transaction);
 }
 
-document.querySelector("#add-btn").onclick = function() {
+document.querySelector("#add-btn").onclick = function () {
   sendTransaction(true);
 };
 
-document.querySelector("#sub-btn").onclick = function() {
+document.querySelector("#sub-btn").onclick = function () {
   sendTransaction(false);
 };
+
+window.addEventListener("online", checkDatabase);
